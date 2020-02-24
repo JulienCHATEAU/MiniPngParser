@@ -156,7 +156,7 @@ func checkFileType(fileContent []byte) {
 func main() {
 	argCount := len(os.Args)
 	if argCount != 2 {
-		logError("Command should be run with only one argument (the path of the file to parse)", Args_Count_Error)
+		logError("Command should be run with only one argument (the path of the file to parse).", Args_Count_Error)
 	}
 
 	filePath := os.Args[1]

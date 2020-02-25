@@ -97,7 +97,7 @@ func (mpFile *MiniPng) printImage() {
 		flattenImage := make([]byte, mpFile.width * mpFile.height)
 		for pixelIndex, pixel := range mpFile.image {
 			for i := 0; i < 8; i++ {
-				flattenImage[pixelIndex * 8 + i] = getNthBit(pixel, i)
+				flattenImage[pixelIndex * 8 + 7 - i] = getNthBit(pixel, i)
 			}
 		}
 		for height := uint32(0); height < mpFile.height; height++ {
@@ -161,7 +161,10 @@ func main() {
 
 	filePath := os.Args[1]
 	fileContent, err := ioutil.ReadFile(filePath)
-	fmt.Println(fileContent)
+	for _, b := range fileContent {
+		fmt.Printf("%x | ", b);
+	}
+	fmt.Println()
 	if err != nil {
 		logError("Can't read given file", Read_File_Error)
 	}

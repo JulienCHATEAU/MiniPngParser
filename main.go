@@ -18,14 +18,13 @@ const (
 	Args_Count_Error 			= 1
 	Read_File_Error				= 2
 	Write_File_Error 			= 3
-	File_Type_Error 			= 4
+	Wrong_Magic_Error 			= 4
 	Wrong_Block_Type_Error 		= 5
 	Wrong_Pixel_Type_Error 		= 6
-	Wrong_Comments_Length_Error	= 7
-	Wrong_Data_Length_Error		= 8
-	Wrong_Image_Dim_Error		= 9
-	Too_Much_Data_Error			= 10
-	Conversion_Error			= 11
+	Wrong_Block_Length_Error	= 7
+	Wrong_Image_Dim_Error		= 8
+	Too_Much_Data_Error			= 9
+	Conversion_Error			= 10
 )
 
 type PixelType byte
@@ -37,16 +36,16 @@ const (
 )
 
 var BYTE_SIZE int = 8
-var PGM string = "P2"
-var PPM string = "P3"
-var MP_TYPE []byte = []byte("Mini-PNG")
+var PGM string = "P2" // PGM magic number
+var PPM string = "P3" // PPM magic number
+var MP []byte = []byte("Mini-PNG") // MP magic number
 var HEADER byte = 72 // H
 var COMMENTS byte = 67 // C
 var DATA byte = 68 // D
 
 /* Global Variables */
 
-var dataPointer uint32
+var filePointer uint32 // pointer used to read over the file content
 var fileContentLength uint32
 
 /* MiniPng struct */
@@ -60,8 +59,9 @@ type MiniPng struct {
 	image		[]byte
 }
 
-func (mpFile *MiniPng) handleOneBlock(fileContent []byte) {
-	switch (fileContent[dataPointer]) {
+// readOneBlock reads a block starting to the current filePointer and fill the MiniPng file accordingly.
+func (mpFile *MiniPng) readOneBlock(fileContent []byte) {
+	switch (fileContent[filePointer]) {
 	case HEADER:
 		mpFile.readHeader(fileContent)
 		break;
@@ -71,7 +71,7 @@ func (mpFile *MiniPng) handleOneBlock(fileContent []byte) {
 		break;
 
 	case DATA:
-		mpFile.readImage(fileContent)
+		mpFile.readData(fileContent)
 		break;
 
 	default:
@@ -80,6 +80,7 @@ func (mpFile *MiniPng) handleOneBlock(fileContent []byte) {
 	}
 }
 
+// readHeader reads a header block.
 func (mpFile *MiniPng) readHeader(fileContent []byte) {
 	var headerContent []byte = []byte{}
 	readTLVBlock(fileContent, &headerContent);
@@ -97,14 +98,17 @@ func (mpFile *MiniPng) readHeader(fileContent []byte) {
 	mpFile.pixelType = PixelType(filePixelType)
 }
 
+// readComments reads a comments block.
 func (mpFile *MiniPng) readComments(fileContent []byte) {
 	readTLVBlock(fileContent, &mpFile.comments);
 }
 
-func (mpFile *MiniPng) readImage(fileContent []byte) {
+// readData reads a data block.
+func (mpFile *MiniPng) readData(fileContent []byte) {
 	readTLVBlock(fileContent, &mpFile.image);
 }
 
+// printMetadata prints the metadata of the MiniPng file.
 func (mpFile *MiniPng) printMetadata() {
 	fmt.Println("Largeur :", mpFile.width)
 	fmt.Println("Hauteur :", mpFile.height)
@@ -112,6 +116,8 @@ func (mpFile *MiniPng) printMetadata() {
 	fmt.Println("Commentaires : \"" + string(mpFile.comments) + "\"")	
 }
 
+// printImage prints the image in the terminal if it is a black and white one.
+// It converts the image in a usable format if it is a scalable gray image or color ones. 
 func (mpFile *MiniPng) printImage() {
 	switch (mpFile.pixelType) {
 	case Black_N_White:
@@ -171,12 +177,16 @@ func (mpFile *MiniPng) printImage() {
 	}
 }
 
+// toPXMFormat returns a string describing the image in a Portable PixMap format or a Portable GrayMap one depending on given format
 func (mpFile *MiniPng) toPXMFormat(format string) string {
 	if mpFile.pixelType != Grey_Scale && format == PGM {
 		logError("Can't convert non gray scale image to PGM format", Conversion_Error)	
 	}
 	if mpFile.pixelType != Color && format == PPM {
 		logError("Can't convert non color image to PPM format", Conversion_Error)	
+	}
+	if format != PGM && format != PPM {
+		logError("Can't convert image to uknown format", Conversion_Error)	
 	}
 	var pmgContent string = format + "\n"
 	pmgContent += strconv.Itoa(int(mpFile.width)) + " " + strconv.Itoa(int(mpFile.height)) + "\n"
@@ -197,32 +207,36 @@ func (mpFile *MiniPng) toPXMFormat(format string) string {
 
 /* Util functions */
 
+// readTLVBlock reads the block following Type-Length-Value rule
 func readTLVBlock(fileContent []byte, contentDest *[]byte) {
-	var contentStart uint32 = dataPointer + 5
-	contentLength := binary.BigEndian.Uint32(fileContent[dataPointer+1:contentStart])
+	var contentStart uint32 = filePointer + 5
+	contentLength := binary.BigEndian.Uint32(fileContent[filePointer+1:contentStart])
 	var contentEnd uint32 = contentStart + contentLength
 	if contentEnd > fileContentLength {
-		logError("Block comments is too large", Wrong_Comments_Length_Error)
+		logError("Block comments is too large", Wrong_Block_Length_Error)
 	}
 	contentToAdd := fileContent[contentStart:contentEnd]
 	*contentDest = append(*contentDest, contentToAdd...)
-	dataPointer = contentEnd
+	filePointer = contentEnd
 }
 
+// getNthBit gets the nth bit of a byte
 func getNthBit(pixel byte, i int) byte {
 	return ((pixel >> i) & 1);
 }
 
+// logError logs an error message and then exit the program with the given status
 func logError(errorMessage string, exitStatus int) {
 	fmt.Println("[ERROR] " + errorMessage)
 	os.Exit(exitStatus)
 }
 
-func checkFileType(fileContent []byte) {
-	dataPointer = 8
-	fileType := fileContent[:dataPointer]
-	if !bytes.Equal(fileType, MP_TYPE) {
-		logError("This file is not a Mini-PNG", File_Type_Error)
+// checkMagic checks if the magic number of the file is correct
+func checkMagic(fileContent []byte) {
+	filePointer = 8
+	fileType := fileContent[:filePointer]
+	if !bytes.Equal(fileType, MP) {
+		logError("This file is not a Mini-PNG", Wrong_Magic_Error)
 	}
 }
 
@@ -240,11 +254,11 @@ func main() {
 		logError("Can't read given file", Read_File_Error)
 	}
 
-	checkFileType(fileContent)
+	checkMagic(fileContent)
 	var mpFile MiniPng = MiniPng{filePath, 0, 0, Black_N_White, []byte{}, []byte{}}
 	fileContentLength = uint32(len(fileContent))
-	for dataPointer < fileContentLength {
-		mpFile.handleOneBlock(fileContent)
+	for filePointer < fileContentLength {
+		mpFile.readOneBlock(fileContent)
 	}
 	mpFile.printMetadata()
 	mpFile.printImage()

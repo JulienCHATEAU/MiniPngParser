@@ -4,19 +4,28 @@ import (
 	"fmt"
 	"os"
 	"bytes"
+	"strconv"
+	"strings"
+	"math"
 	"io/ioutil"
 	"encoding/binary"
 )
+
+/* Constants */
 
 type ErrorCode byte 
 const (
 	Args_Count_Error 			= 1
 	Read_File_Error				= 2
-	File_Type_Error 			= 3
-	Wrong_Block_Error 			= 4
-	Wrong_Pixel_Type_Error 		= 5
-	Wrong_Comments_Length_Error	= 6
-	Too_Much_Data_Error			= 7
+	Write_File_Error 			= 3
+	File_Type_Error 			= 4
+	Wrong_Block_Type_Error 		= 5
+	Wrong_Pixel_Type_Error 		= 6
+	Wrong_Comments_Length_Error	= 7
+	Wrong_Data_Length_Error		= 8
+	Wrong_Image_Dim_Error		= 9
+	Too_Much_Data_Error			= 10
+	Conversion_Error			= 11
 )
 
 type PixelType byte
@@ -27,10 +36,15 @@ const (
 	Color 			= 3
 )
 
+var BYTE_SIZE int = 8
+var PGM string = "P2"
+var PPM string = "P3"
 var MP_TYPE []byte = []byte("Mini-PNG")
 var HEADER byte = 72 // H
 var COMMENTS byte = 67 // C
-var DATA byte = 68 // C
+var DATA byte = 68 // D
+
+/* Global Variables */
 
 var dataPointer uint32
 var fileContentLength uint32
@@ -38,6 +52,7 @@ var fileContentLength uint32
 /* MiniPng struct */
 
 type MiniPng struct {
+	filePath	string
 	width		uint32
 	height 		uint32
 	pixelType 	PixelType
@@ -60,41 +75,34 @@ func (mpFile *MiniPng) handleOneBlock(fileContent []byte) {
 		break;
 
 	default:
-		logError("Can't read a block", Wrong_Block_Error)
+		logError("Can't read a block", Wrong_Block_Type_Error)
 		break;
 	}
 }
 
 func (mpFile *MiniPng) readHeader(fileContent []byte) {
-	dataPointer = dataPointer + 1
-	headerLength := binary.BigEndian.Uint32(fileContent[dataPointer:dataPointer + 4])
-	dataPointer = dataPointer + 4
-	if (dataPointer + headerLength > fileContentLength) {
-		logError("contents length is to high", Wrong_Comments_Length_Error)
-	}
+	var headerContent []byte = []byte{}
+	readTLVBlock(fileContent, &headerContent);
 
-	fileWidth := fileContent[dataPointer:dataPointer + 4]
+	fileWidth := headerContent[0:4]
 	mpFile.width = binary.BigEndian.Uint32(fileWidth)
-	dataPointer = dataPointer + 4
 
-	fileHeight := fileContent[dataPointer:dataPointer + 4]
+	fileHeight := headerContent[4:8]
 	mpFile.height = binary.BigEndian.Uint32(fileHeight)
-	dataPointer = dataPointer + 4
 
-	filePixelType := fileContent[dataPointer]
+	filePixelType := headerContent[8]
 	if filePixelType < 0 || filePixelType > 3 {
 		logError("Can't read header", Wrong_Pixel_Type_Error)
 	}
 	mpFile.pixelType = PixelType(filePixelType)
-	dataPointer = dataPointer + 1
 }
 
 func (mpFile *MiniPng) readComments(fileContent []byte) {
-	readBlock(fileContent, &mpFile.comments)
+	readTLVBlock(fileContent, &mpFile.comments);
 }
 
 func (mpFile *MiniPng) readImage(fileContent []byte) {
-	readBlock(fileContent, &mpFile.image)
+	readTLVBlock(fileContent, &mpFile.image);
 }
 
 func (mpFile *MiniPng) printMetadata() {
@@ -107,20 +115,25 @@ func (mpFile *MiniPng) printMetadata() {
 func (mpFile *MiniPng) printImage() {
 	switch (mpFile.pixelType) {
 	case Black_N_White:
+		// In terminal
 		imageSize := mpFile.width * mpFile.height
+		imageByteCapacity := math.Ceil(float64(imageSize) / float64(BYTE_SIZE))
+		if float64(len(mpFile.image)) != imageByteCapacity {
+			logError("Wrong image dimension", Wrong_Image_Dim_Error)		
+		}
 		flattenImage := make([]byte, imageSize)
 		for pixelIndex, pixel := range mpFile.image {
-			for i := 0; i < 8; i++ {
-				pos := pixelIndex * 8 + 7 - i
+			for i := 0; i < BYTE_SIZE; i++ { // Iterates pixel (1 byte) from right to left but should fill flattenImage from left to right
+				pos := pixelIndex * BYTE_SIZE + BYTE_SIZE - 1 - i 
 				if pos >= int(imageSize) {
 					break;
 				}
 				flattenImage[pos] = getNthBit(pixel, i)
 			}
 		}
-		for height := uint32(0); height < mpFile.height; height++ {
-			for width := uint32(0); width < mpFile.width; width++ {
-				if flattenImage[height * mpFile.width + width] == 0 {
+		for i := uint32(0); i < mpFile.height; i++ {
+			for j := uint32(0); j < mpFile.width; j++ {
+				if flattenImage[i * mpFile.width + j] == 0 {
 					fmt.Print("X")
 				} else {
 					fmt.Print(" ")
@@ -130,28 +143,74 @@ func (mpFile *MiniPng) printImage() {
 		} 
 		break;
 
+	case Grey_Scale:
+		// In PGM file
+		pgmFilePath := strings.Replace(mpFile.filePath, ".mp", ".pgm", 1)
+		pgmFileContent := []byte(mpFile.toPXMFormat(PGM))
+		err := ioutil.WriteFile(pgmFilePath, pgmFileContent, 0644)
+		if err != nil {
+			logError("Can't write in file", Write_File_Error)
+		}
+		fmt.Println("You can run 'display " + pgmFilePath + "' to display the image")
+		break;
+	
+	case Color:
+		// In PPM file
+		ppmFilePath := strings.Replace(mpFile.filePath, ".mp", ".ppm", 1)
+		ppmFileContent := []byte(mpFile.toPXMFormat(PPM))
+		err := ioutil.WriteFile(ppmFilePath, ppmFileContent, 0644)
+		if err != nil {
+			logError("Can't write in file", Write_File_Error)
+		}
+		fmt.Println("You can run 'display " + ppmFilePath + "' to display the image")
+		break;
+
 	default:
 		logError("Pixel type is wrong", Wrong_Pixel_Type_Error)	
 		break;	
 	}
 }
 
-/* Core functions */
-
-func getNthBit(pixel byte, i int) byte {
-	return ((pixel >> i) & 1);
+func (mpFile *MiniPng) toPXMFormat(format string) string {
+	if mpFile.pixelType != Grey_Scale && format == PGM {
+		logError("Can't convert non gray scale image to PGM format", Conversion_Error)	
+	}
+	if mpFile.pixelType != Color && format == PPM {
+		logError("Can't convert non color image to PPM format", Conversion_Error)	
+	}
+	var pmgContent string = format + "\n"
+	pmgContent += strconv.Itoa(int(mpFile.width)) + " " + strconv.Itoa(int(mpFile.height)) + "\n"
+	pmgContent += "255\n"
+	height := mpFile.height
+	width := mpFile.width
+	if format == PPM {
+		height *= 3
+	}
+	for i := uint32(0); i < height; i++ {
+		for j := uint32(0); j < width; j++ {
+			pmgContent += strconv.Itoa(int(mpFile.image[i * width + j])) + " "
+		}
+		pmgContent += "\n"
+	}
+	return pmgContent
 }
 
-func readBlock(fileContent []byte, contentDest *[]byte) {
+/* Util functions */
+
+func readTLVBlock(fileContent []byte, contentDest *[]byte) {
 	var contentStart uint32 = dataPointer + 5
 	contentLength := binary.BigEndian.Uint32(fileContent[dataPointer+1:contentStart])
 	var contentEnd uint32 = contentStart + contentLength
-	if (contentEnd > fileContentLength) {
-		logError("contents length is to high", Wrong_Comments_Length_Error)
+	if contentEnd > fileContentLength {
+		logError("Block comments is too large", Wrong_Comments_Length_Error)
 	}
-	*contentDest = make([]byte, contentLength)
-	copy(*contentDest, fileContent[contentStart:contentEnd])
+	contentToAdd := fileContent[contentStart:contentEnd]
+	*contentDest = append(*contentDest, contentToAdd...)
 	dataPointer = contentEnd
+}
+
+func getNthBit(pixel byte, i int) byte {
+	return ((pixel >> i) & 1);
 }
 
 func logError(errorMessage string, exitStatus int) {
@@ -160,7 +219,8 @@ func logError(errorMessage string, exitStatus int) {
 }
 
 func checkFileType(fileContent []byte) {
-	fileType := fileContent[:8]
+	dataPointer = 8
+	fileType := fileContent[:dataPointer]
 	if !bytes.Equal(fileType, MP_TYPE) {
 		logError("This file is not a Mini-PNG", File_Type_Error)
 	}
@@ -176,23 +236,15 @@ func main() {
 
 	filePath := os.Args[1]
 	fileContent, err := ioutil.ReadFile(filePath)
-	for _, b := range fileContent {
-		fmt.Printf("%x | ", b);
-	}
-	fmt.Println()
 	if err != nil {
 		logError("Can't read given file", Read_File_Error)
 	}
 
 	checkFileType(fileContent)
-	var mpFile MiniPng = MiniPng{0, 0, Black_N_White, []byte{}, []byte{}}
-	dataPointer = 8
+	var mpFile MiniPng = MiniPng{filePath, 0, 0, Black_N_White, []byte{}, []byte{}}
 	fileContentLength = uint32(len(fileContent))
 	for dataPointer < fileContentLength {
 		mpFile.handleOneBlock(fileContent)
-	}
-	if dataPointer < fileContentLength {
-		logError("Too much data in this image", Too_Much_Data_Error)
 	}
 	mpFile.printMetadata()
 	mpFile.printImage()

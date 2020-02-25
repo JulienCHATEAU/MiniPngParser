@@ -13,11 +13,10 @@ const (
 	Args_Count_Error 			= 1
 	Read_File_Error				= 2
 	File_Type_Error 			= 3
-	Wrong_Header_Error 			= 4
+	Wrong_Block_Error 			= 4
 	Wrong_Pixel_Type_Error 		= 5
-	Wrong_Comments_Error 		= 6
-	Wrong_Comments_Length_Error	= 7
-	Too_Much_Data_Error			= 8
+	Wrong_Comments_Length_Error	= 6
+	Too_Much_Data_Error			= 7
 )
 
 type PixelType byte
@@ -46,10 +45,27 @@ type MiniPng struct {
 	image		[]byte
 }
 
-func (mpFile *MiniPng) readHeader(fileContent []byte) {
-	if fileContent[dataPointer] != HEADER {
-		logError("Can't read header", Wrong_Header_Error)
+func (mpFile *MiniPng) handleOneBlock(fileContent []byte) {
+	switch (fileContent[dataPointer]) {
+	case HEADER:
+		mpFile.readHeader(fileContent)
+		break;
+
+	case COMMENTS:
+		mpFile.readComments(fileContent)
+		break;
+
+	case DATA:
+		mpFile.readImage(fileContent)
+		break;
+
+	default:
+		logError("Can't read a block", Wrong_Block_Error)
+		break;
 	}
+}
+
+func (mpFile *MiniPng) readHeader(fileContent []byte) {
 	dataPointer = dataPointer + 1
 	headerLength := binary.BigEndian.Uint32(fileContent[dataPointer:dataPointer + 4])
 	dataPointer = dataPointer + 4
@@ -74,14 +90,11 @@ func (mpFile *MiniPng) readHeader(fileContent []byte) {
 }
 
 func (mpFile *MiniPng) readComments(fileContent []byte) {
-	readBlock(fileContent, COMMENTS, "comments", &mpFile.comments)
+	readBlock(fileContent, &mpFile.comments)
 }
 
 func (mpFile *MiniPng) readImage(fileContent []byte) {
-	readBlock(fileContent, DATA, "data", &mpFile.image)
-	if dataPointer < fileContentLength {
-		logError("Too much data in this image", Too_Much_Data_Error)
-	}
+	readBlock(fileContent, &mpFile.image)
 }
 
 func (mpFile *MiniPng) printMetadata() {
@@ -94,10 +107,15 @@ func (mpFile *MiniPng) printMetadata() {
 func (mpFile *MiniPng) printImage() {
 	switch (mpFile.pixelType) {
 	case Black_N_White:
-		flattenImage := make([]byte, mpFile.width * mpFile.height)
+		imageSize := mpFile.width * mpFile.height
+		flattenImage := make([]byte, imageSize)
 		for pixelIndex, pixel := range mpFile.image {
 			for i := 0; i < 8; i++ {
-				flattenImage[pixelIndex * 8 + 7 - i] = getNthBit(pixel, i)
+				pos := pixelIndex * 8 + 7 - i
+				if pos >= int(imageSize) {
+					break;
+				}
+				flattenImage[pos] = getNthBit(pixel, i)
 			}
 		}
 		for height := uint32(0); height < mpFile.height; height++ {
@@ -124,10 +142,7 @@ func getNthBit(pixel byte, i int) byte {
 	return ((pixel >> i) & 1);
 }
 
-func readBlock(fileContent []byte, blockType byte, blockLabel string, contentDest *[]byte) {
-	if fileContent[dataPointer] != blockType {
-		logError("Can't read " + blockLabel, Wrong_Comments_Error)
-	}
+func readBlock(fileContent []byte, contentDest *[]byte) {
 	var contentStart uint32 = dataPointer + 5
 	contentLength := binary.BigEndian.Uint32(fileContent[dataPointer+1:contentStart])
 	var contentEnd uint32 = contentStart + contentLength
@@ -173,9 +188,12 @@ func main() {
 	var mpFile MiniPng = MiniPng{0, 0, Black_N_White, []byte{}, []byte{}}
 	dataPointer = 8
 	fileContentLength = uint32(len(fileContent))
-	mpFile.readHeader(fileContent)
-	mpFile.readComments(fileContent)
-	mpFile.readImage(fileContent)
+	for dataPointer < fileContentLength {
+		mpFile.handleOneBlock(fileContent)
+	}
+	if dataPointer < fileContentLength {
+		logError("Too much data in this image", Too_Much_Data_Error)
+	}
 	mpFile.printMetadata()
 	mpFile.printImage()
 }
